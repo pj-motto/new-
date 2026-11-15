@@ -257,3 +257,12 @@ there are no CSV or JSON exports anywhere in the system.
 
 `docs/TEST-CHECKLIST-PHASE-1.md` and `docs/RLS-TEST.sql` cover the schema and security
 layer at SQL level, including how to impersonate each role inside a transaction.
+
+## Notification and live tracking upgrade
+
+Start with [START_HERE.md](START_HERE.md). This upgrade adds migrations 061–067,
+persistent SOS and unit acknowledgement alarms, a private notification-driven
+push pipeline, escalation/watchdog jobs, expanded portal notification coverage,
+and a read-only live tracking screen. Verification and remaining device checks
+are in [docs/VERIFICATION.md](docs/VERIFICATION.md) and
+[docs/ACCEPTANCE-CHECKLIST.md](docs/ACCEPTANCE-CHECKLIST.md).

@@ -354,6 +354,7 @@ const UG_RELIEF = (function () {
               '<span>' + I('clock', 12) + esc(fmtDate(r.distribution_at)) + '</span>' +
               '<span class="ug-mono">' + esc(r.contact_phone) + '</span></div></div>' +
               '<div class="ug-rowf ug-gap6" style="gap:6px;justify-content:flex-end;flex-wrap:wrap">' +
+                '<label>'+esc(T('notify.phase'))+' <select class="ug-sel" data-relief-phase="'+esc(r.id)+'">'+['scheduled','ongoing','completed','cancelled'].map(p=>'<option value="'+p+'"'+(p===(r.phase || 'scheduled')?' selected':'')+'>'+esc(T('notify.phase.'+p))+'</option>').join('')+'</select></label>' +
                 '<button class="ug-btn ug-btn--sm" data-act="relief-verify" data-id="' + esc(r.id) + '">' + I('users', 14) + esc(T('action.verify')) + '</button>' +
                 '<button class="ug-btn ug-btn--sm ug-btn--ghost" data-act="relief-view" data-id="' + esc(r.id) + '" title="' + esc(T('action.viewDetails')) + '">' + I('eye', 14) + esc(T('action.view')) + '</button>' +
                 '<button class="ug-btn ug-btn--sm ug-btn--ghost" data-act="relief-edit" data-id="' + esc(r.id) + '" title="' + esc(T('action.edit')) + '">' + I('settings', 14) + esc(T('action.edit')) + '</button>' +

@@ -84,6 +84,7 @@ const UG_SUPERADMIN = (function () {
 
   const SIDE_MENU = [
     { route: 'dashboard', label: 'Operations', icon: 'grid' },
+    { route: 'tracking', label: null, icon: 'activity' },
     { route: 'settings', label: 'Settings', icon: 'settings' },
     { route: 'notifications', label: 'Notifications', icon: 'bell' },
     { route: 'reporting', label: 'Reports & Documents', icon: 'file' },
@@ -397,7 +398,8 @@ const UG_SUPERADMIN = (function () {
       '<h1 class="sa-side-title">System Admin</h1>' +
       '<nav class="sa-side-nav" aria-label="Operations menu">' + SIDE_MENU.map((m) =>
         '<button type="button" class="sa-side-link"' + btn('nav', { route: m.route }) + '>' + li(m.icon, 16, 'sa-side-ico') +
-        '<span class="sa-flex1">' + esc(m.label) + '</span>' +
+        '<span class="sa-flex1">' + esc(m.route==='tracking'?UG_I18N.t('notify.tracking'):m.label) + '</span>' +
+        (m.route === 'notifications' && window.UG_NOTIFY ? UG_NOTIFY.badgeHTML() : '') +
         (m.route === 'notifications' && unread > 0 ? '<span class="sa-badge">' + unread + '</span>' : '') +
         li('arrow', 14, 'sa-side-arrow') + '</button>').join('') + '</nav>' +
       '<div class="sa-side-label"><span>Accounts by role</span><span class="sa-num">' + total + '</span></div>' +
@@ -421,7 +423,7 @@ const UG_SUPERADMIN = (function () {
       '<nav class="sa-tabs" aria-label="Admin sections">' +
         VIEWS.map((v) => '<button type="button" class="sa-tab' + (st.view === v[0] ? ' is-on' : '') + '"' + btn('sa-view', { view: v[0] }) + (st.view === v[0] ? ' aria-current="page"' : '') + '>' + v[1] + '</button>').join('') +
         /* phones and tablets have no sidebar: its menu shows here instead */
-        SIDE_MENU.map((m) => '<button type="button" class="sa-tab sa-tab--side"' + btn('nav', { route: m.route }) + '>' + esc(m.label) + li('arrow', 14) + '</button>').join('') +
+        SIDE_MENU.map((m) => '<button type="button" class="sa-tab sa-tab--side"' + btn('nav', { route: m.route }) + '>' + esc(m.route==='tracking'?UG_I18N.t('notify.tracking'):m.label) + li('arrow', 14) + '</button>').join('') +
       '</nav>' +
       '<span class="sa-avatar">' + esc(initial) + '</span>' +
       '<button type="button" class="sa-hero-out"' + btn('logout') + ' aria-label="Sign out">' + li('logout', 16) + '</button>' +

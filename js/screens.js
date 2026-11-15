@@ -479,7 +479,7 @@ const UG_SCREENS = (() => {
         '<button class="ug-ico-btn" aria-label="Offline readiness"' + A('nav', attr({ route: 'offline' })) + '>' +
           I(st.offline ? 'wifioff' : 'download', 17) + '</button>' +
         '<button class="ug-ico-btn" aria-label="Notifications"' + A('nav', attr({ route: 'notifications' })) + '>' +
-          I('bell', 17) + badge + '</button>' +
+          I('bell', 17) + (window.UG_NOTIFY ? UG_NOTIFY.badgeHTML() : '') + badge + '</button>' +
         '<button class="ug-ico-btn" aria-label="Sign out"' + A('logout') + '>' + I('logout', 17) + '</button>' +
       '</div>' +
     '</div>';
@@ -1352,16 +1352,17 @@ const UG_SCREENS = (() => {
       bySig[sig] = true;
       deduped.unshift(n);
     }
-    const rows = deduped;
+    const rows = window.UG_NOTIFY ? UG_NOTIFY.filteredRows(deduped) : deduped;
     const unread = rows.filter(n => n.unread).length;
     return '<div class="ug-col" style="gap:14px">' +
+      (window.UG_NOTIFY ? UG_NOTIFY.pinnedHTML() + UG_NOTIFY.filtersHTML(raw) : '') +
       '<div class="ug-rowf ug-between" style="gap:8px"><div><div class="ug-lab">Push Notifications</div><h2 style="font-size:19px;margin-top:3px">Inbox</h2>' +
         (unread ? '<div class="ug-dimmer" style="font-size:11px;margin-top:4px">' + unread + ' unread</div>' : '') + '</div>' +
         '<button class="ug-btn ug-btn--sm ug-btn--ghost"' + A('read-all') + '>' + I('check', 15) + 'Mark All Read</button></div>' +
       '<div class="ug-card"><div class="ug-rows">' + (rows.length ? rows.map(n => notifRow(n)).join('') : '<div class="ug-empty"><span class="e-ico">' + I('bell', 20) + '</span>' +
         '<div style="font-size:12.5px;font-weight:600;color:var(--ug-ink-2)">No notifications yet</div>' +
         '<div class="ug-dim" style="font-size:11px">Advisories, report status changes and road work notices appear here.</div></div>') + '</div></div>' +
-      '<div class="ug-rowf ug-gap8" style="gap:7px;justify-content:center;color:var(--ug-ink-3);font-size:10.5px">' + I('bell', 12) + 'Alerts are delivered even when the app is closed. History persists on this device.</div>' +
+      '<div class="ug-rowf ug-gap8" style="gap:7px;justify-content:center;color:var(--ug-ink-3);font-size:10.5px">' + I('bell', 12) + esc(T('notify.deliveryLimits')) + '</div>' +
       /* Enable push on this device — surfaces the subscribe flow so the
          push_subscriptions table actually gets a row, instead of the LGU
          seeing "no push devices registered yet" forever. */
@@ -1408,6 +1409,7 @@ const UG_SCREENS = (() => {
   /* ================================================================== */
   const DNAV = [
     ['dashboard', 'nav.home', 'home', null],
+    ['tracking', 'notify.tracking', 'truck', null, ['lgu_ldrrmc','barangay_official']],
     ['incidents', 'nav.incidents', 'alert', '6'],
     ['advisories', 'nav.advisories', 'megaphone', '5'],
     ['relief', 'nav.relief', 'relief', null],
@@ -1480,7 +1482,7 @@ const UG_SCREENS = (() => {
         '<span class="ug-dimmer" style="font-size:10.5px">' + esc(sub) + '</span></div>' +
       '<div class="ug-rowf ug-gap8" style="gap:8px;margin-left:auto">' +
         '<span class="ug-chip ug-top-live' + (st.offline ? '' : ' is-on') + '">' + I(st.offline ? 'wifioff' : 'wave', 13) + (st.offline ? 'Offline' : 'Live feed') + '</span>' +
-        '<button class="ug-ico-btn" aria-label="Notifications"' + A('nav', attr({ route: 'notifications' })) + '>' + I('bell', 17) + (st.readNotifs ? '' : '<span class="dot"></span>') + '</button>' +
+        '<button class="ug-ico-btn" aria-label="Notifications"' + A('nav', attr({ route: 'notifications' })) + '>' + I('bell', 17) + (window.UG_NOTIFY ? UG_NOTIFY.badgeHTML() : '') + (st.readNotifs ? '' : '<span class="dot"></span>') + '</button>' +
         '<button class="ug-ico-btn" aria-label="Sign out"' + A('logout') + '>' + I('logout', 17) + '</button>' +
         '<div class="ug-rowf ug-gap10" style="gap:9px;padding-left:6px;border-left:1px solid var(--ug-line);margin-left:4px">' +
           '<span class="ug-col ug-top-user" style="gap:0;align-items:flex-end"><span style="font-size:12px;font-weight:600">' + esc(role.name) + '</span>' +
@@ -2764,6 +2766,7 @@ const UG_SCREENS = (() => {
   function desktopBody(st){
     switch (st.route) {
       case 'dashboard': return dDashboard(st);
+      case 'tracking': return UG_TRACKING.screen(st);
       case 'incidents': return dIncidents(st);
       case 'incident': return dIncident(st);
       case 'command': return dCommand(st);

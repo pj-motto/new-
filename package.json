@@ -1,0 +1,6 @@
+{
+  "name": "uniguard-verification",
+  "private": true,
+  "scripts": { "test": "node --test tests/*.test.cjs", "check": "node tests/check-syntax.cjs" },
+  "devDependencies": { "fake-indexeddb": "6.2.5", "jsdom": "26.1.0", "typescript": "5.9.3" }
+}

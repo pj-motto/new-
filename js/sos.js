@@ -153,7 +153,7 @@ const UG_SOS = (function () {
   function activeStrip(st) {
     const role = st && st.session && st.session.role;
     if (role !== 'lgu_ldrrmc' && role !== 'barangay_official') return '';
-    const sound = (typeof UG_ALARM !== 'undefined' && !UG_ALARM.muted() && UG_ALARM.needsUnlock())
+    const sound = (typeof UG_NOTIFY === 'undefined' && typeof UG_ALARM !== 'undefined' && !UG_ALARM.muted() && UG_ALARM.needsUnlock())
       ? '<div class="ug-offline" style="cursor:pointer"' + A('alarm-unlock') + '>' + I('alert', 14) +
           '<span>Alarm sound is off until you tap here. Tap once so SOS and new reports can ring on this screen.</span></div>'
       : '';
@@ -214,6 +214,7 @@ const UG_SOS = (function () {
     UG_FEATURES.modal({
       title: 'SOS from ' + (s.profile_name || 'a resident'),
       body:
+        (window.UG_TRACKING ? '<div data-sos-timeline="'+esc(s.id)+'">'+UG_TRACKING.timelineHTML(s,(UG.DATA.dispatches || {})[s.report_id] || [],[])+'</div>' : '') +
         kv('Status', statusBadge(s.status)) +
         kv('Type', kindLabel(s.kind)) +
         kv('Response', s.report_id ? 'Team dispatched automatically (see the linked report)' : 'Not dispatched automatically · send a team') +
@@ -242,6 +243,7 @@ const UG_SOS = (function () {
         }
       },
       onMount: (wrap) => {
+        if(window.UG_TRACKING) UG_TRACKING.fillTimeline(s);
         /* mount the mini map after the modal is in the DOM. Unbounded: an SOS
            sent from outside Lingayen must still show where it came from. */
         if (s.lat != null && typeof MapView !== 'undefined' && window.L) {

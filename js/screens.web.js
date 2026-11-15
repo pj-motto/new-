@@ -62,7 +62,7 @@ const UG_WEB = (() => {
     const secondary = [['guides', 'Guides', 'guide'], ['faqs', 'FAQs', 'faq'], ['hotlines', 'Hotlines', 'phone'], ['offline', 'Offline', 'download'], ['settings', 'Settings', 'settings']];
     const navBtn = (n) =>
       '<button class="ug-wnav-i' + (active === n[0] ? ' is-on' : '') + '"' + A('nav', attr({ route: n[0] })) + '>' +
-      I(n[2], 16) + n[1] + (n[0] === 'notifications' && unread ? '<span class="ug-wdot' + (unread > 9 ? ' is-many' : '') + '">' + (unread > 9 ? '9+' : unread) + '</span>' : '') + '</button>';
+      I(n[2], 16) + n[1] + (n[0] === 'notifications' && window.UG_NOTIFY ? UG_NOTIFY.badgeHTML() : '') + (n[0] === 'notifications' && unread ? '<span class="ug-wdot' + (unread > 9 ? ' is-many' : '') + '">' + (unread > 9 ? '9+' : unread) + '</span>' : '') + '</button>';
     return '<header class="ug-wtop">' +
       '<button class="ug-brand ug-brand-btn"' + A('nav', attr({ route: 'home' })) + ' aria-label="Go to the home screen">' + U.brandMark(32) +
         '<span class="ug-col" style="gap:0"><span class="ug-wordmark" style="font-size:16px">Uni<em>Guard</em></span>' +
@@ -384,20 +384,21 @@ const UG_WEB = (() => {
     return '<div class="ug-col" style="gap:18px">' +
       cwHead('Notifications', 'Push Notifications delivered to this device, including alerts received while the app was closed.',
         '<button class="ug-btn ug-btn--ghost ug-btn--sm"' + A('read-all') + '>' + I('check', 15) + 'Mark All Read</button>') +
+      (window.UG_NOTIFY ? UG_NOTIFY.pinnedHTML() + UG_NOTIFY.filtersHTML(U.DATA.notifications || []) : '') +
       '<div class="ug-wgrid-side">' +
         /* tappable rows, shared with the mobile inbox (UG_SCREENS.notifRow) */
         '<div class="ug-card"><div class="ug-rows">' + ((U.DATA.notifications || []).length
-          ? (U.DATA.notifications || []).map((n) => UG_SCREENS.notifRow(n)).join('')
+          ? (window.UG_NOTIFY ? UG_NOTIFY.filteredRows(U.DATA.notifications || []) : U.DATA.notifications || []).map((n) => UG_SCREENS.notifRow(n)).join('')
           : '<div class="ug-empty"><span class="e-ico">' + I('bell', 20) + '</span>' +
             '<div style="font-size:12.5px;font-weight:600;color:var(--ug-ink-2)">No notifications yet</div></div>') + '</div></div>' +
         '<div class="ug-col" style="gap:18px">' +
           '<div class="ug-card"><div class="ug-card-h"><h3>Delivery</h3></div><div class="ug-card-b ug-col" style="gap:10px">' +
-            [['Unread', String(st.readNotifs ? 0 : unread), 'warning'], ['Delivered today', '5', 'advisory'], ['Delivery channel', 'Push + offline inbox', 'prepared']]
+            [['Unread', String(st.readNotifs ? 0 : unread), 'warning'], ['Delivered today', String((U.DATA.notifications || []).filter(n => Date.parse(n.created_at) > Date.now()-86400000).length), 'advisory'], ['Delivery channel', 'Push + offline inbox', 'prepared']]
               .map(x => '<div class="ug-rowf ug-between" style="gap:10px;font-size:12px"><span class="ug-dim">' + x[0] + '</span>' +
                 '<span class="ug-mono" style="color:var(--ug-' + x[2] + ')">' + x[1] + '</span></div>').join('') +
           '</div></div>' +
           '<div class="ug-card ug-card--flat"><div class="ug-card-b ug-dim" style="font-size:11.5px;line-height:1.55">' +
-            'Alerts are delivered even when the app is closed, and are queued for the offline inbox when there is no signal.</div></div>' +
+            esc(T('notify.deliveryLimits')) + '</div></div>' +
         '</div>' +
       '</div>' +
     '</div>';

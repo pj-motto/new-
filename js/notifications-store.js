@@ -14,7 +14,7 @@
  */
 const UG_NOTIF_STORE = (function () {
   const DB_NAME = 'uniguard';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const STORE = 'notifications';
 
   function openDB() {
@@ -29,7 +29,8 @@ const UG_NOTIF_STORE = (function () {
           const os = db.createObjectStore(STORE, { keyPath: 'id' });
           os.createIndex('created_at', 'created_at');
         }
-        if (!db.objectStoreNames.contains('snapshot')) { /* created by pwa.js */ }
+        if (!db.objectStoreNames.contains('snapshot')) db.createObjectStore('snapshot');
+        if (!db.objectStoreNames.contains('queue')) db.createObjectStore('queue', { keyPath:'id', autoIncrement:true });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
@@ -45,9 +46,9 @@ const UG_NOTIF_STORE = (function () {
           const t = db.transaction(STORE, mode);
           const os = t.objectStore(STORE);
           const out = fn(os);
-          t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
-          t.onerror = () => resolve(null);
-          t.onabort = () => resolve(null);
+          t.oncomplete = () => { db.close(); resolve(out && out.result !== undefined ? out.result : out); };
+          t.onerror = () => { db.close(); resolve(null); };
+          t.onabort = () => { db.close(); resolve(null); };
         } catch (e) { resolve(null); }
       });
     });
@@ -64,26 +65,11 @@ const UG_NOTIF_STORE = (function () {
   }
 
   function trim() {
-    return tx('readonly', (os) => os.count()).then((n) => {
-      if (!n || n <= 200) return;
-      return tx('readwrite', (os) => {
-        const idx = os.index('created_at');
-        const range = IDBKeyRange.upperBound(Date.now(), false);
-        /* advance past everything we want to keep, then delete the rest */
-        let skipped = 0;
-        const keep = n - 200;
-        const req = idx.openCursor(range);
-        req.onsuccess = () => {
-          const cur = req.result;
-          if (!cur) return;
-          if (skipped < keep) { skipped++; cur.continue(); }
-          else {
-            /* we are now at the (keep+1)th oldest entry; nuke it and continue */
-            os.delete(cur.primaryKey);
-            cur.continue();
-          }
-        };
-      });
+    return list().then(rows => {
+      // Keep every pending row plus the latest 200 ordinary rows. created_at is
+      // ISO text; the old numeric IDBKeyRange and cursor deleted newer entries.
+      const discard = rows.filter(r => !(r.requires_ack && !r.acked_at)).slice(200);
+      return tx('readwrite', os => discard.forEach(r => os.delete(r.id)));
     });
   }
 
@@ -122,5 +108,14 @@ const UG_NOTIF_STORE = (function () {
     });
   }
 
-  return { mergeAll, list, markReadLocal, markAllReadLocal };
+  function pendingSnapshot(userId,value) {
+    return openDB().then(db=>{if(!db)return null;return new Promise(resolve=>{
+      try {const t=db.transaction('snapshot',value===undefined?'readonly':'readwrite');
+        const request=value===undefined?t.objectStore('snapshot').get('pending:'+userId):t.objectStore('snapshot').put(value,'pending:'+userId);
+        t.oncomplete=()=>{db.close();resolve(request.result);};t.onerror=t.onabort=()=>{db.close();resolve(null);};
+      }catch(e){db.close();resolve(null);}
+    });});
+  }
+  function listFor(userId){return list().then(rows=>rows.filter(r=>r.user_id===userId));}
+  return { mergeAll, list, listFor, pendingSnapshot, markReadLocal, markAllReadLocal };
 })();

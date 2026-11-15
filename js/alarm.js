@@ -35,7 +35,7 @@ const UG_ALARM = (function () {
       if (!AC) return null;
       ctx = new AC();
     }
-    if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) { } }
+    if (ctx.state === 'suspended' || ctx.state === 'interrupted') { try { ctx.resume(); } catch (e) { } }
     return ctx;
   }
   /* a console left open without a tap stays silent (browser autoplay rule);
@@ -96,7 +96,7 @@ const UG_ALARM = (function () {
       'Every SOS',
       'A team that could not be sent automatically (no free unit, no team for the hazard)'] },
     super_admin: { test: 'admin', events: [
-      'Every SOS',
+      'SOS escalation (every SOS when enabled by the Super Admin)',
       'A new Emergency-severity report: the hazard\'s own alarm',
       'A team that could not be sent automatically',
       'A change request waiting for your approval'] },
@@ -171,6 +171,64 @@ const UG_ALARM = (function () {
     } catch (e) { return false; }   /* sound is an enhancement, never a blocker */
   }
 
-  return { play, groupFor, muted, setMuted, roleAlarms, needsUnlock, unlock };
+  // Requested loops survive autoplay blocking; only server-confirmed handling stops them.
+  const loops = new Map();
+  function loudCycle(entry, reminder) {
+    const ac = audio();
+    if (!ac || ac.state !== 'running') return 1000;
+    const master = ac.createGain(); master.gain.value = 1.0;
+    const compressor = ac.createDynamicsCompressor();
+    compressor.threshold.value = -10; compressor.ratio.value = 12;
+    master.connect(compressor).connect(ac.destination);
+    entry.nodes = [master, compressor];
+    const steps = reminder ? [[1050, 1050, .25, 'square']] : entry.kind === 'dispatch'
+      ? PATTERNS.dispatch.steps
+      : [[1050,1050,.16,'square'],[0,0,.12],[1050,1050,.16,'square'],[0,0,.12],
+         [1050,1050,.16,'square'],[0,0,.12],[1400,1400,.7,'square'],[0,0,.2]];
+    let time = ac.currentTime + .02;
+    steps.forEach(([f0, f1, duration, wave]) => {
+      if (f0) {
+        [f0, f0 + 10].forEach(frequency => {
+          const oscillator = ac.createOscillator(), gain = ac.createGain();
+          oscillator.type = wave || 'square'; oscillator.frequency.value = frequency;
+          gain.gain.setValueAtTime(.0001, time); gain.gain.exponentialRampToValueAtTime(.45, time + .015);
+          gain.gain.setValueAtTime(.45, time + duration - .025); gain.gain.exponentialRampToValueAtTime(.0001, time + duration);
+          oscillator.connect(gain).connect(master); oscillator.start(time); oscillator.stop(time + duration + .02);
+          entry.nodes.push(oscillator, gain);
+        });
+      }
+      time += duration;
+    });
+    try { if (navigator.vibrate) navigator.vibrate([400,150,400,150,800]); } catch (e) {}
+    return (time - ac.currentTime) * 1000;
+  }
+  function release(entry) {
+    (entry.nodes || []).forEach(node => { try { if (node.stop) node.stop(); node.disconnect(); } catch (e) {} });
+    entry.nodes = [];
+  }
+  function cycle(key) {
+    const entry = loops.get(key); if (!entry) return;
+    clearTimeout(entry.timer); release(entry);
+    if (needsUnlock()) { entry.timer = setTimeout(() => cycle(key), 1000); return; }
+    const reminder = Date.now() - entry.started >= 30 * 60 * 1000;
+    const duration = loudCycle(entry, reminder);
+    entry.timer = setTimeout(() => cycle(key), reminder ? 60000 : duration + 600);
+  }
+  function loop(key, kind, opts) {
+    if (loops.has(key)) return;
+    loops.set(key, { kind: kind === 'dispatch' ? 'dispatch' : 'sos', opts: opts || {}, started: Date.now(), nodes: [] });
+    cycle(key);
+  }
+  function stop(key) {
+    const entry = loops.get(key); if (!entry) return;
+    clearTimeout(entry.timer); release(entry); loops.delete(key);
+    try { if (!loops.size && navigator.vibrate) navigator.vibrate(0); } catch (e) {}
+  }
+  function stopAll() { Array.from(loops.keys()).forEach(stop); }
+  function isLooping(key) { return loops.has(key); }
+  function loopingKeys() { return Array.from(loops.keys()); }
+  document.addEventListener('ug:alarm-unlocked', () => loops.forEach((_, key) => cycle(key)));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && loops.size) unlock(); });
+  return { play, groupFor, muted, setMuted, roleAlarms, needsUnlock, unlock, loop, stop, stopAll, isLooping, loopingKeys };
 })();
 window.UG_ALARM = UG_ALARM;

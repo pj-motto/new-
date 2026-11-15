@@ -1,0 +1,6 @@
+# These functions validate user JWTs or the private internal header themselves.
+# Required because pg_net requests have no user JWT.
+[functions.push-dispatch]
+verify_jwt = false
+[functions.sms-fallback]
+verify_jwt = false

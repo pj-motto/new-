@@ -5,7 +5,7 @@
  */
 const UG_PWA = (function () {
   const DB_NAME = 'uniguard';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const STORE_SNAPSHOT = 'snapshot';
   const STORE_QUEUE = 'queue';
 
@@ -35,6 +35,7 @@ const UG_PWA = (function () {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE_SNAPSHOT)) db.createObjectStore(STORE_SNAPSHOT);
         if (!db.objectStoreNames.contains(STORE_QUEUE)) db.createObjectStore(STORE_QUEUE, { keyPath: 'id', autoIncrement: true });
+        if(!db.objectStoreNames.contains('notifications')) {const os=db.createObjectStore('notifications',{keyPath:'id'});os.createIndex('created_at','created_at');}
       };
       req.onsuccess = () => { clearTimeout(timer); resolve(req.result); };
       req.onerror = () => { clearTimeout(timer); reject(req.error); };
@@ -47,8 +48,8 @@ const UG_PWA = (function () {
       const t = db.transaction(store, mode);
       const s = t.objectStore(store);
       const out = fn(s);
-      t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
-      t.onerror = () => reject(t.error);
+      t.oncomplete = () => { db.close(); resolve(out && out.result !== undefined ? out.result : out); };
+      t.onerror = () => { db.close(); reject(t.error); };
     }));
   }
 
@@ -90,9 +91,9 @@ const UG_PWA = (function () {
         try {
           const t = db.transaction('notifications', 'readwrite');
           t.objectStore('notifications').clear();
-          t.oncomplete = () => resolve(true);
-          t.onerror = () => resolve(null);
-          t.onabort = () => resolve(null);
+          t.oncomplete = () => { db.close(); resolve(true); };
+          t.onerror = () => { db.close(); resolve(null); };
+          t.onabort = () => { db.close(); resolve(null); };
         } catch (e) { resolve(null); }
       });
     }).catch(() => null);
@@ -300,12 +301,20 @@ const UG_PWA = (function () {
     if (permission !== 'granted') throw new Error('Notification permission was not granted.');
 
     const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.subscribe({
+    let sub = await reg.pushManager.getSubscription();
+    const c = Repo.client();
+    if (!c || !Auth.state.profile) throw new Error('Sign in to enable push notifications.');
+    if(sub){
+      const own=await c.from('push_subscriptions').select('id').eq('user_id',Auth.state.profile.id).eq('endpoint',sub.endpoint).maybeSingle();
+      if(own.error)throw own.error;
+      // A shared browser may still hold the last account's subscription.
+      if(!own.data){await sub.unsubscribe();sub=null;}
+    }
+    sub = sub || await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(UG_CONFIG.VAPID_PUBLIC_KEY)
     });
 
-    const c = Repo.client();
     if (c) {
       /* fetch the signed-in user id — the push_subscriptions table has a
          NOT NULL user_id + an RLS policy that requires user_id = auth.uid().
@@ -336,8 +345,25 @@ const UG_PWA = (function () {
     if (!(await pushSupported())) return false;
     try {
       const reg = await navigator.serviceWorker.ready;
-      return !!(await reg.pushManager.getSubscription());
+      const sub=await reg.pushManager.getSubscription();
+      if(!sub || Notification.permission!=='granted' || !Auth.state.profile || !Repo.client())return false;
+      const r=await Repo.client().from('push_subscriptions').select('id').eq('user_id',Auth.state.profile.id).eq('endpoint',sub.endpoint).maybeSingle();
+      return !r.error && !!r.data;
     } catch (e) { return false; }
+  }
+
+  async function repairPush() {
+    if(!(await pushSupported()) || typeof Notification==='undefined' || Notification.permission!=='granted')return false;
+    if(await pushEnabled())return true;
+    try {return await enablePush();} catch(e){return false;}
+  }
+
+  async function detachPush() {
+    if(!('serviceWorker' in navigator))return;
+    const reg=await navigator.serviceWorker.getRegistration();if(!reg)return;
+    const sub=await reg.pushManager.getSubscription();if(!sub)return;
+    if(Repo.client() && Auth.state.profile) await Repo.client().from('push_subscriptions').delete().eq('user_id',Auth.state.profile.id).eq('endpoint',sub.endpoint);
+    await sub.unsubscribe();
   }
 
   /* ------------------------------------------------------- retry connection */
@@ -426,6 +452,6 @@ const UG_PWA = (function () {
     enqueue, upsertQueuedSos, listQueue, removeFromQueue, refreshQueueCount,
     storeSnapshot, readSnapshot, clearSnapshot, clearQueue, clearNotifications,
     hydrateFromCache,
-    enablePush, pushEnabled, pushSupported
+    enablePush, pushEnabled, repairPush, detachPush, pushSupported
   };
 })();

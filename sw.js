@@ -4,7 +4,7 @@
  * map tiles and the last synced data available, and serves a push notification
  * payload sent by the push-dispatch Edge Function.
  */
-const VERSION = 'uniguard-v35';
+const VERSION = 'uniguard-v36';
 const SHELL = 'uniguard-shell-' + VERSION;
 const TILES = 'uniguard-tiles-' + VERSION;
 const IMAGES = 'uniguard-images-' + VERSION;
@@ -67,6 +67,9 @@ const PRECACHE = [
   './js/theme.js',
   './js/hazard-types.js',
   './js/alarm.js',
+  './js/notify.js',
+  './js/tracking.js',
+  './css/notify.css',
   './js/relief.js',
   './js/settings.js',
   './js/guides.js',
@@ -188,29 +191,35 @@ self.addEventListener('push', (event) => {
     : payload.severity === 'warning' ? '#FFB020'
     : payload.severity === 'prepared' ? '#2FD08A' : '#4D9BFF';
 
-  event.waitUntil(self.registration.showNotification(payload.title, {
+  event.waitUntil(Promise.all([self.registration.showNotification(payload.title, {
     body: payload.body,
     icon: './icons-192.png',
     badge: './icons-192.png',
     tag: payload.tag || payload.advisory_id || 'uniguard',
     renotify: !!payload.renotify,
-    requireInteraction: payload.severity === 'emergency',
-    data: { url: payload.url || './index.html', advisory_id: payload.advisory_id || null },
-    vibrate: payload.severity === 'emergency' ? [200, 80, 200, 80, 200] : [120]
-  }));
+    requireInteraction: payload.requireInteraction === undefined ? payload.severity === 'emergency' : !!payload.requireInteraction,
+    data: payload,
+    vibrate: payload.priority === 'critical' ? [500,200,500,200,500,200,900] : payload.priority === 'urgent' ? [300,150,300] : [120]
+  }), self.clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>Promise.all(list.map(c=>c.postMessage({type:'ug-push',payload}))))]));
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || './index.html';
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
-      for (const client of list) {
-        if ('focus' in client) { client.navigate(target); return client.focus(); }
-      }
-      return self.clients.openWindow(target);
-    })
-  );
+  const payload = event.notification.data || {};
+  let target = new URL(payload.url || './index.html#notifications', self.registration.scope);
+  if(target.origin !== self.location.origin) target = new URL('./index.html#notifications',self.registration.scope);
+  if(payload.notification_id)target.searchParams.set('ug_notification',payload.notification_id);
+  event.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(async list=>{
+    const client=list.find(c=>c.url.startsWith(self.registration.scope));
+    if(client){await client.focus();client.postMessage({type:'ug-open',payload});return;}
+    const opened=await self.clients.openWindow(target.href);
+    if(opened)opened.postMessage({type:'ug-open',payload});
+  }));
+});
+self.addEventListener('pushsubscriptionchange',event=>{
+  event.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>Promise.all(list.map(c=>c.postMessage({type:'ug-subscription-change'})))));
+  // No authentication token is stored in the worker. If no page is open,
+  // enrollment is repaired on the next authenticated visit.
 });
 
 /* Queued reports are flushed by the page on reconnect; a background sync hook

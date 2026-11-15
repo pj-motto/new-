@@ -177,14 +177,15 @@ const Repo = (function () {
       id: s.id, user_id: s.user_id, profile_name: s.profile_name, profile_phone: s.profile_phone,
       barangay: s.barangay, lat: s.lat, lng: s.lng, accuracy: s.accuracy,
       note: s.note, status: s.status || 'sent', kind: s.kind || 'other', report_id: s.report_id || null,
-      created_at: s.created_at,
+      barangay_id: s.barangay_id, acked_at: s.acked_at, acked_by: s.acked_by, acked_by_name: s.acked_by_name,
+      resolved_at: s.resolved_at, resolved_by: s.resolved_by, resolved_by_name: s.resolved_by_name, created_at: s.created_at,
       time: UG_UTIL.relTime(s)
     };
   }
 
   function toNotification(n) {
     return {
-      id: n.id,
+      id: n.id, user_id: n.user_id,
       title: n.title || '',
       body: n.body || '',
       tone: n.tone || 'advisory',
@@ -197,7 +198,9 @@ const Repo = (function () {
       advisory_id: n.advisory_id,
       road_work_id: n.road_work_id,
       sos_id: n.sos_id,
-      relief_id: n.relief_id
+      priority: n.priority || 'normal', requires_ack: !!n.requires_ack, acked_at: n.acked_at, acked_by: n.acked_by,
+      dispatch_id: n.dispatch_id, change_request_id: n.change_request_id, target_route: n.target_route, target_id: n.target_id,
+      read_at: n.read_at, relief_id: n.relief_id
     };
   }
 
@@ -213,7 +216,7 @@ const Repo = (function () {
       distribution_at: r.distribution_at,
       contact_person: r.contact_person || '', contact_phone: r.contact_phone || '',
       eligibility: arr(r.eligibility), required_docs: arr(r.required_docs),
-      note: r.note || '', active: r.active !== false
+      phase: r.phase || 'scheduled', note: r.note || '', active: r.active !== false
     };
   }
   function toBeneficiary(b) {
@@ -391,6 +394,19 @@ const Repo = (function () {
     recomputeKpis();
   }
 
+  async function loadNotificationRows() {
+    const c = client(); if (!c) return { data: [], error: null };
+    const uid = state.profile && state.profile.id;
+    if (!uid) return { data: [], error: null };
+    const [pending, recent] = await Promise.all([
+      c.from('notifications').select('*').eq('user_id', uid).eq('requires_ack', true).is('acked_at', null).order('created_at', { ascending: true }).limit(200),
+      c.from('notifications').select('*').eq('user_id', uid).order('created_at', { ascending: false }).limit(100)
+    ]);
+    if (pending.error || recent.error) return { error: pending.error || recent.error, data: [] };
+    return { data: Array.from(new Map((recent.data || []).concat(pending.data || []).map(n => [n.id,n])).values())
+      .sort((a,b) => Date.parse(b.created_at)-Date.parse(a.created_at)), error: null };
+  }
+
   /* opts.silent: a background refresh (realtime event, poll). It skips the
      "loading" repaint and only repaints when the rows actually changed, so the
      open screen is not rebuilt every few seconds for nothing. */
@@ -424,7 +440,7 @@ const Repo = (function () {
         c.from('advisories').select('*').order('published_at', { ascending: false }).limit(100),
         c.from('evacuation_centers').select('*').order('name'),
         c.from('emergency_hotlines').select('*').order('agency_name'),
-        c.from('notifications').select('*').order('created_at', { ascending: false }).limit(100),
+        loadNotificationRows(),
         c.from('push_subscriptions').select('id', { count: 'exact', head: true }),
         c.from('report_assignments').select('report_id').is('released_at', null),
         c.from('relief_distributions').select('*').order('distribution_at', { ascending: false }).limit(100),
@@ -715,6 +731,7 @@ const Repo = (function () {
 
     await loadAll();
     const row = (UG.DATA.incidents || []).find((i) => i.uuid === data.id) || toIncident(data, 0);
+    if(window.UG_NOTIFY)UG_NOTIFY.offerEnrollment();
     return { queued: false, row: row, report: data };
   }
 
@@ -900,26 +917,10 @@ const Repo = (function () {
       await c.from('advisory_targets').insert(input.barangayIds.map((b) => ({ advisory_id: data.id, barangay_id: b })));
     }
     /* fan out the in-app notification to targeted residents */
-    await c.rpc('fanout_advisory', { p_advisory_id: data.id });
+    const fanout=await c.rpc('fanout_advisory', { p_advisory_id: data.id });
+    if(fanout.error)fail(fanout.error);
 
-    /* Web Push — sent ONLY when the duty officer picked "push" delivery.
-       The DOCX asks for a choice: emergency advisories push, informational
-       advisories stay in the inbox without a push. Honoured here so the
-       publish path matches what the composer let the user select. */
-    if (input.delivery_mode === 'push' && window.UG_PUSH_DISPATCH !== false) {
-      try {
-        await c.functions.invoke('push-dispatch', {
-          body: {
-            title: input.title,
-            body: input.body,
-            severity: input.severity || 'advisory',
-            advisoryId: data.id,
-            area: input.affected_area || UG_GEO.PLACE.areaAll,
-            url: './index.html#/advisory-detail'
-          }
-        });
-      } catch (e) { /* push is an enhancement; the advisory + in-app fan-out already succeeded */ }
-    }
+    /* Database fan-out queues push once, honoring the advisory delivery mode. */
 
     await loadAll();
     return data;
@@ -1039,14 +1040,7 @@ const Repo = (function () {
     const { data, error } = await c.rpc('declare_emergency', { p_title: title, p_body: body, p_area: area });
     if (error) fail(error);
     await loadAll();
-    if (window.UG_PUSH_DISPATCH !== false && data && data.advisory_id) {
-      /* best effort: hand the advisory to the push gateway */
-      try {
-        await c.functions.invoke('push-dispatch', {
-          body: { title: title, body: body, severity: 'emergency', advisoryId: data.advisory_id, area: area }
-        });
-      } catch (e) { /* push is an enhancement; the advisory is already published */ }
-    }
+    /* declare_emergency uses the same database-originated push pipeline. */
     return data;
   }
 
@@ -1463,7 +1457,7 @@ const Repo = (function () {
   }
   function adaptRelief(input) {
     const out = {};
-    ['title','barangay','location_name','address','lat','lng','distribution_at','contact_person','contact_phone','note','active'].forEach((k) => {
+    ['title','barangay','location_name','address','lat','lng','distribution_at','contact_person','contact_phone','note','active','phase'].forEach((k) => {
       if (input[k] !== undefined) out[k] = input[k];
     });
     if (input.eligibility) out.eligibility = JSON.stringify(input.eligibility);
@@ -1602,6 +1596,7 @@ const Repo = (function () {
     });
     if (error) fail(error);
     loadAll({ silent: true }).catch(() => { });
+    if(window.UG_NOTIFY)UG_NOTIFY.offerEnrollment();
     return data;
   }
   async function listSos() {
@@ -1744,7 +1739,7 @@ const Repo = (function () {
 
   return {
     client, online, state, onChange,
-    loadAll, forceReload, subscribe, unsubscribe, setRefreshGate, autoDispatch, rateReport, reportHandlers,
+    loadAll, loadNotificationRows, forceReload, subscribe, unsubscribe, setRefreshGate, autoDispatch, rateReport, reportHandlers,
     createReport, uploadPhoto, signedPhotoUrl, corroborate, advanceStatus, lguVerify, barangayAt, reportHistory, updateReport,
     createAdvisory, updateCenter, createCenter, createHotline, updateHotline, deleteHotline,
     markRead, markAllRead, listBarangays,

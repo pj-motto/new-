@@ -20,6 +20,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import webpush from 'npm:web-push@3.6.7';
+import { secretMatches, targetedPush } from '../_shared/notification-delivery.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -44,6 +45,16 @@ Deno.serve(async (req: Request) => {
   if (!service) return json({ error: 'Service role key is not configured on this function' }, 500);
   if (!vapidPublic || !vapidPrivate) return json({ error: 'VAPID keys are not configured' }, 500);
 
+  let body: Record<string, any> = {};
+  try { body = await req.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
+  const internalHeader = req.headers.get('x-ug-internal');
+  if (internalHeader !== null) {
+    if (!secretMatches(internalHeader, Deno.env.get('INTERNAL_PUSH_SECRET'))) return json({ error: 'Unauthorized internal request' }, 401);
+    webpush.setVapidDetails(vapidSubject, vapidPublic, vapidPrivate);
+    try { return json(await targetedPush(createClient(url, service, { auth: { persistSession: false } }), webpush, body)); }
+    catch (e) { return json({ error: (e as Error).message }, 500); }
+  }
+
   // ---- who is calling -----------------------------------------------------
   const authHeader = req.headers.get('Authorization') || '';
   if (!authHeader.startsWith('Bearer ')) return json({ error: 'Missing bearer token' }, 401);
@@ -53,13 +64,16 @@ Deno.serve(async (req: Request) => {
   if (userErr || !userData?.user) return json({ error: 'Not signed in' }, 401);
 
   const { data: profile } = await asCaller
-    .from('profiles').select('role, barangay_id, dispatch_unit_id').eq('id', userData.user.id).maybeSingle();
+    .from('profiles').select('role, barangay_id, dispatch_unit_id, disabled').eq('id', userData.user.id).maybeSingle();
 
-  if (!profile) return json({ error: 'Profile not found' }, 403);
+  if (!profile || profile.disabled) return json({ error: 'Account unavailable' }, 403);
+  if (body.selfTest === true) {
+    webpush.setVapidDetails(vapidSubject, vapidPublic, vapidPrivate);
+    try { return json(await targetedPush(createClient(url, service, { auth: { persistSession: false } }), webpush, body, userData.user.id)); }
+    catch (e) { return json({ error: (e as Error).message }, 500); }
+  }
 
   // ---- read the request ---------------------------------------------------
-  let body: Record<string, unknown> = {};
-  try { body = await req.json(); } catch { /* an empty body is allowed */ }
 
   const title = String(body.title || 'UniGuard alert');
   const message = String(body.body || '');
@@ -69,6 +83,9 @@ Deno.serve(async (req: Request) => {
   const urlTarget = String(body.url || './index.html');
   const barangayId = (body.barangayId as string) || null;
   const unitId = (body.unitId as string) || null;
+
+  if (!['lgu_ldrrmc', 'barangay_official'].includes(profile.role)) return json({ error: 'Only officials can broadcast' }, 403);
+  if (profile.role === 'barangay_official' && (unitId || !barangayId || barangayId !== profile.barangay_id)) return json({ error: 'Target your own barangay only' }, 403);
 
   // audience authorisation
   //   · LGU can broadcast municipality-wide (no audience) OR target any

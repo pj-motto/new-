@@ -406,6 +406,7 @@ const Auth = (function () {
   }
 
   async function signOut() {
+    try { if(typeof UG_PWA!=='undefined') await UG_PWA.detachPush(); } catch(e) {}
     const c = Repo.client();
     if (c) { try { await c.auth.signOut(); } catch (e) {} }
     state.session = null;

@@ -16,7 +16,7 @@
  * templates but cannot edit them, which the database enforces again via RLS.
  */
 const UG_SETTINGS = (function () {
-  const esc = UG_UTIL.esc, I = UG.icon, U = UG;
+  const esc = UG_UTIL.esc, I = UG.icon, U = UG, T = k => UG_I18N.t(k);
   const A = (act, extra) => ' data-act="' + act + '"' + (extra ? ' ' + extra : '');
   const attr = (o) => Object.keys(o).map(k => ' data-' + k + '="' + esc(o[k]) + '"').join('');
   /* safe bridges to the controller (app.js assigns these on boot). Modules
@@ -198,6 +198,7 @@ const UG_SETTINGS = (function () {
     }
     cur[keys[keys.length - 1]] = value;
     saveUserPrefs(p);
+    if (path.indexOf('notifications.') === 0) saveNotificationPrefs().catch(e => { if(window.UG_APP) UG_APP.toast(e.message, 'warning'); });
     return p;
   }
   /* called by app.js on login so prefs reload for the new user */
@@ -208,6 +209,22 @@ const UG_SETTINGS = (function () {
       UG_I18N.setLang(p.language.ui);
     }
     return p;
+  }
+
+  async function saveNotificationPrefs() {
+    if(typeof Repo==='undefined'||!Repo.client()||!Auth.state.profile)return;
+    const n=getUserPrefs().notifications;
+    const result=await Repo.client().from('notification_prefs').upsert({user_id:Auth.state.profile.id,push_enabled:n.pushEnabled!==false,quiet_hours:!!n.quietHours,quiet_start:n.quietStart||'22:00',quiet_end:n.quietEnd||'06:00'});
+    if(result.error)throw result.error;
+  }
+  async function loadNotificationPrefs() {
+    if(!Repo.client()||!Auth.state.profile)return;
+    const uid=Auth.state.profile.id;
+    const r=await Repo.client().from('notification_prefs').select('*').eq('user_id',uid).maybeSingle();
+    if(r.error)throw r.error;
+    if(!r.data || Auth.state.profile?.id!==uid)return;
+    Object.assign(getUserPrefs().notifications,{pushEnabled:r.data.push_enabled,quietHours:r.data.quiet_hours,quietStart:r.data.quiet_start.slice(0,5),quietEnd:r.data.quiet_end.slice(0,5)});
+    saveUserPrefs(getUserPrefs());
   }
 
   /* SYSTEM CONFIG — device-wide (LGU shared). Kept for the org-profile and
@@ -462,6 +479,7 @@ const UG_SETTINGS = (function () {
     return '<div class="ug-card"><div class="ug-card-h"><h3>Alarm sound</h3>' +
         '<span class="ug-badge ug-badge--' + (on ? 'resolved' : 'id') + '">' + (on ? 'On' : 'Off') + '</span></div>' +
       '<div class="ug-card-b ug-col" style="gap:12px">' +
+        '<p>'+esc(T('notify.muteLimit'))+'</p>' +
         '<div class="ug-rowf ug-gap10 ug-setting-toggle" style="gap:10px;align-items:flex-start">' +
           '<span class="ug-col" style="gap:3px;min-width:0;flex:1">' +
             '<span style="font-size:12.5px;font-weight:600">Sound the alarm on this device</span>' +
@@ -483,10 +501,11 @@ const UG_SETTINGS = (function () {
     /* quiet hours, email digests and the SMS fallback switch are broadcast
        policy for the whole municipality, so only LGU staff see them */
     if (role !== 'lgu_ldrrmc') {
-      return '<div class="ug-col" style="gap:18px">' + deviceAlertsCard(T) + alarmCard(st) + '</div>';
+      return '<div class="ug-col" style="gap:18px">' + deviceAlertsCard(T) + alarmCard(st) + (window.UG_NOTIFY ? UG_NOTIFY.devicesHTML() : '') + '</div>';
     }
     return '<div class="ug-col" style="gap:18px">' +
       deviceAlertsCard(T) +
+      (window.UG_NOTIFY ? UG_NOTIFY.devicesHTML() + UG_NOTIFY.settingsHTML() : '') +
       alarmCard(st) +
       '<div class="ug-card"><div class="ug-card-h"><h3>' + T('settings.notificationChannels') + '</h3></div>' +
         '<div class="ug-card-b ug-col" style="gap:12px">' +
@@ -761,7 +780,7 @@ const UG_SETTINGS = (function () {
   return {
     alarmCard,
     dSettings, tabTemplates, openEditor, deleteTemplate, exportTemplates,
-    getSettings, patchSettings, saveSettings,
+    saveNotificationPrefs, loadNotificationPrefs, getSettings, patchSettings, saveSettings,
     /* per-user prefs + system config */
     getUserPrefs, patchUserPrefs, saveUserPrefs, reloadUserPrefs,
     getSystemConfig, patchSystemConfig, saveSystemConfig,

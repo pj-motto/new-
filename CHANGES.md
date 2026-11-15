@@ -1087,3 +1087,141 @@ Live test: reports from Poblacion (and other barangays) were filed under Bantaya
   - Verified: 800/800 interior points (25 per barangay) and 5,000/5,000 random points match an independent computation; fresh install and upgrade over 051/052 with existing reports; the 98-check workflow suite still passes.
 - **Client**: the Barangay field follows the pin (server answer; address guess only offline); a note and a confirm step when the dropdown differs from the pin; the success message shows the barangay the report was filed under. `sw.js` → `uniguard-v17`, build `2026-10-26.1`.
 - Files: `migrations/053_barangay_boundaries.sql` (new); `js/app.js`, `js/screens.js`, `js/repo.js`, `js/geo.js`; `sw.js`, `env.js`; `docs/TEST-CHECKLIST-ALL.md` (section 32).
+
+## Notification and dispatch enhancement — Phase 1
+
+The uploaded ZIP matches GitHub branch `super_admin_screen`, commit
+`ed1900f7b8e84892cf1263debdc862ce1934e5f1` byte for byte.
+
+Implemented `061_notifications_core.sql` through `065_alert_settings.sql`,
+`UG_NOTIFY` in `js/notify.js`, and the looping API in `js/alarm.js`.
+Pending state has an independent channel and 15-second recovery poll. Reading
+never acknowledges; server-confirmed incident actions do. `dispatch_ack_alarm`
+records human acceptance independently of the existing GPS status changes.
+Twenty-two latest existing notification-producing function bodies now use
+`ug_notify` through the compatibility adapter `ug_notify_batch`; recipients
+and wording are preserved except the specified SOS and unit alarm priorities.
+Internal push and self-test modes are in `push-dispatch`; SMS now requires a
+server credential. New server preferences use Manila quiet hours. The worker
+forwards pushes to open pages and preserves routing payloads. Cache version: v36.
+
+Validation: all migrations 061–065 applied twice to disposable PostgreSQL 17;
+`tests/database.sql` T1–T18 passed. These are newly written regression checks,
+not the missing section 10 tests. `tests/client.test.cjs` passed 10 checks for
+loop idempotence, mute bypass, autoplay recovery, reminder cadence, first-load
+SOS, dirty-form independence, Super Admin backstop, offline acknowledgement,
+unit GPS/human acknowledgement, Realtime stop, and pending cache retention.
+Browser hardware audio, live push/SMS, and multi-device Supabase delivery still
+require the deployment acceptance checklist. No production database was changed.
+
+### Discrepancies
+
+- The attached prompt ends after section 5. Referenced sections 6–12, including
+  the event matrix, detailed tracking requirements, T1–T18 and final report
+  template, are absent. Subsequent coverage/tracking uses the explicit problem
+  list and the supplied code; it cannot claim conformance to the missing text.
+- 047 adds a persisted escalation flag/view as well as the older time-based
+  `reports_feed` behavior. The new watchdog checks `status='reported'` and age
+  at least one hour directly and leaves those views unchanged.
+- The dispatch portal already has automatic GPS sharing and status transitions.
+  They are extended rather than replaced. The arrival threshold will use the
+  protected settings value; human alarm acceptance stays independent.
+- `relief_distributions` has no phase column in this source. Coverage adds an
+  explicit phase with conservative scheduled/ongoing/completed/cancelled states.
+- A normal LGU account could previously change notification content directly;
+  the new guard allows only `read_at` through REST. It is an invoker trigger,
+  so an attacker-controlled session setting cannot authorize protected writes.
+- Existing 011 requires `pg_trgm`; existing 043 requires its configured Super
+  Admin auth account. These are baseline prerequisites, not new migration errors.
+
+### Assumptions and limits
+
+- This is a source upgrade for the existing Supabase application. No separate
+  hosted Site or replacement backend is created; no deployment credentials were
+  provided. New SQL migrations must be installed before the new static files.
+- Existing dispatches are grandfathered once during 063 so rollout does not
+  resurrect historical alarms. Existing notification rows retain normal defaults.
+- `push_count`, `last_push_at` and `sms_sent_at` record queue attempts, not proof
+  of delivery. The database atomically reserves attempts before asynchronous
+  HTTP, preventing duplicate minute jobs and bounding failures to 60 pushes.
+- `ug_private_config` is private RLS storage with no client grants or policies.
+- A minute schedule fires a default 60-second escalation at roughly 60–119
+  seconds. An open page changes its overdue label at the configured second.
+- Pending query safety bounds are 50 SOS and 200 acknowledgement/dispatch rows;
+  reaching a bound displays a warning. Operators must use the incident queue
+  if this unusually large active backlog is reached.
+- Client loops require browser audio permission and a running page. A closed
+  or sleeping PWA cannot promise an uninterruptible siren or background GPS.
+
+## Notification coverage — Phase 2
+
+`066_notification_coverage.sql` adds change-request creation notifications to the
+Super Admin and new-report notifications to duty LGU, scoped officials and the
+Super Admin. The SOS-created report is flagged internally to avoid a duplicate
+new-report alarm. It adds distribution phases with a staff selector, shelter
+Full/Closed notices, road state updates, equipment maintenance/unavailability,
+threshold-based inventory alerts, and active-dispatch detail/assignment changes.
+Account creation/access changes notify the account and Super Admin through the
+same layer; disabled recipients are deliberately excluded. Existing patient,
+support/help, relief escort, approval, status and reroute notifications retain
+their audience/text and now use central insertion and push delivery.
+
+Tests: database T19–T25; existing workflow checks T12, T16, T20–T21 and T36–T38;
+full-portal DOM rendering and translation coverage. Notifications for unsupported
+item routes expand the saved content. Existing approval and SOS details fetch
+the clicked row directly, so an older pending item is not lost behind recent
+list limits. Advisory in-app delivery is preserved by the queue; the two old
+browser push invocations were removed to avoid duplicate advisory deliveries.
+
+## Live tracking — Phase 3
+
+`067_dispatch_live_tracking.sql` adds server-written `dispatch_locations` with
+RLS inherited through the visible dispatch, Realtime publication, a 30-day
+retention function, and one lost-signal alert per outage. Fresh accepted fixes
+acknowledge the outage on every recipient copy. `update_dispatch_location`
+retains its existing signature and operational transitions, reads the protected
+arrival radius, and refuses to infer arrival from absent/poor accuracy.
+`dispatch.js` requests fresh stationary fixes every 15 seconds and no longer
+marks a failed send as successful. It rejects stale location callbacks.
+
+`UG_TRACKING` provides a read-only operations route with Leaflet positions,
+accuracy circles, signal state, team/report/barangay search, status filter,
+selected team's recent trail, approximate straight-line ETA and ordered response
+timeline. Lost/poor-quality positions do not yield ETA estimates. The existing
+SOS modal uses the same timeline, including named human acceptance and recorded
+automatic event notes. SOS resolution closes linked pending unit alarms without
+inventing a completed operational dispatch status. No verify/dispatch controls
+were added to the Super Admin tracking view.
+
+Tests: database T26–T33, T39–T41 and tracking DOM/signal/ETA tests. Actual GPS
+behavior, map ergonomics and device background restrictions remain acceptance
+checks on the deployed system.
+
+## Integration hardening and final verification
+
+- Shared offline IDB version 2 now creates notification, snapshot and queue
+  stores from either opener and closes short-lived database connections.
+- Confirmed pending state is cached per account and profile scope. Offline
+  restoration preserves alarms until fresh server reconciliation; it never
+  invents a successful acknowledgement. Notification history is account-scoped.
+- Device state checks require the current account's saved browser subscription.
+  Granted-but-expired subscriptions are repaired on authenticated visits;
+  signing out removes and unsubscribes the current browser device.
+- Worker notification clicks carry IDs through cold starts; route messages and
+  unknown-type fallback prevent dead taps. External push click URLs are confined
+  to the app origin.
+- The existing public advisory and road-work fanout RPCs keep authenticated
+  access with author/LGU authorization and dedupe, while internal functions stay
+  uncallable by clients. Existing RPC signatures are compared in the test runner.
+- `env.js` build is `2026-11-15.notifications.1`; the public app origin replaces
+  the old hardcoded localhost setting. No private key was added to browser code.
+- Final checks: 34 Node tests + 41 SQL assertions + 8 SQL transport assertions,
+  all passing; all 35 JS files parsed; four TS sources transpiled; changed Edge
+  Functions and the shared helper passed actual Deno type checking. Migrations
+  061–067 applied twice after a fresh 001–060 baseline. See
+  `docs/VERIFICATION.md` for the precise evidence and test limitations.
+- No production database, hosting deployment, live notification audience or
+  GitHub remote was modified. Setup instructions, private config template,
+  exact migration order and device acceptance checks are included.
+
+Final routing review: a unit notification now opens `dispatch-detail` with its exact assignment ID. The unit loader merges active assignments with recent history and fetches a selected older assignment directly. Older incident/advisory notification targets are fetched by ID outside recent-list limits. Two additional routing tests bring the final total to 83 passing Node/SQL tests and assertions.

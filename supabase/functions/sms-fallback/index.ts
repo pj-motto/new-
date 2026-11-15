@@ -18,6 +18,7 @@
 //   supabase secrets set SMS_GATEWAY_URL=https://... SMS_GATEWAY_KEY=... SMS_SENDER=UniGuard
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { secretMatches } from '../_shared/notification-delivery.ts';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -54,6 +55,11 @@ Deno.serve(async (req: Request) => {
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch { /* allow an empty body */ }
 
+  const internal = secretMatches(req.headers.get('x-ug-internal'), Deno.env.get('INTERNAL_PUSH_SECRET'));
+  const serverCaller = secretMatches((req.headers.get('Authorization') || '').replace(/^Bearer /, ''), service);
+  if (!internal && !serverCaller) return json({ error: 'Server delivery only' }, 401);
+  if (internal && (!Array.isArray(body.userIds) || body.userIds.length === 0)) return json({ error: 'Recipient IDs required' }, 400);
+
   const title = String(body.title || 'UniGuard alert');
   const message = String(body.message || '');
   const severity = String(body.severity || 'advisory');
@@ -63,7 +69,8 @@ Deno.serve(async (req: Request) => {
 
   // Only accounts with a mobile number, and only for anything above an advisory,
   // so we never burn gateway credit on routine posts.
-  let q = admin.from('profiles').select('id, full_name, phone, barangay').not('phone', 'is', null);
+  let q = admin.from('profiles').select('id, full_name, phone, barangay').not('phone', 'is', null).eq('disabled', false);
+  if (internal) q = q.in('id', (body.userIds as string[]).slice(0, 10000));
   if (barangayId) q = q.eq('barangay_id', barangayId);
   else if (unitId) q = q.eq('dispatch_unit_id', unitId).eq('role', 'dispatch_team');
 
@@ -72,7 +79,12 @@ Deno.serve(async (req: Request) => {
   if (error) return json({ error: error.message }, 500);
 
   const text = `${title}${area ? ' (' + area + ')' : ''}: ${message}`.slice(0, 480);
-  const recipients = (people ?? []).filter((p) => p.phone && p.phone.length >= 10);
+  let recipients = (people ?? []).filter((p) => p.phone && p.phone.length >= 10);
+  if (internal && Array.isArray(body.notificationIds)) {
+    const { data: pending, error: pendingError } = await admin.from('notifications').select('user_id').in('id', body.notificationIds).eq('requires_ack', true).is('acked_at', null);
+    if (pendingError) return json({ error: pendingError.message }, 500);
+    recipients = recipients.filter(p => (pending || []).some(n => n.user_id === p.id));
+  }
 
   if (!gatewayUrl || !gatewayKey) {
     await admin.from('audit_log').insert({

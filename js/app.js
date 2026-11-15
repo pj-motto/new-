@@ -233,7 +233,9 @@
     }
     paintChrome();
     mountMaps();
+    if(window.UG_TRACKING) UG_TRACKING.mount();
     syncNavButton();
+    if(window.UG_NOTIFY) setTimeout(()=>UG_NOTIFY.handlePendingOpen(),0);
     /* auto-acquire GPS the first time a citizen opens the report form, so the
        pin is already in place before they have to think about it. Never blocks:
        a failure silently leaves the form ready for the manual Acquire button. */
@@ -410,6 +412,8 @@
 
   /* ------------------------------------------------------------ data loading */
   async function loadRouteData(route) {
+    if(route==='tracking'){await UG_TRACKING.load();return;}
+    if((route==='incident'||route==='report-detail') && S.openId){loadDispatchesFor(S.openId);return;}
     /* Dispatch team: their data comes from UG_DISPATCH, not Repo. */
     if (S.session && S.session.role === 'dispatch_team' && typeof UG_DISPATCH !== 'undefined' && UG_DISPATCH.loadRoute) {
       await UG_DISPATCH.loadRoute(route);
@@ -535,7 +539,7 @@
     'relief', 'relief-verify', 'guides', 'faqs', 'roadwork', 'map', 'sos',
     'others-review', 'response-team', 'dispatch-units', 'dispatch', 'reporting',
     'equipment', 'roster', 'hospital', 'requests', 'contacts', 'dispatch-detail', 'settings',
-    'admin-home'];
+    'admin-home','tracking'];
 
   function routeFromHash() {
     const h = String((window.location && window.location.hash) || '').replace(/^#\/?/, '').split('?')[0];
@@ -2420,35 +2424,10 @@
     },
 
     'open-notification': async (d) => {
-      /* every tap marks the row read; a row with a link also opens it */
-      const n = (UG.DATA.notifications || []).find((x) => x.id === d.id);
+      const n = (UG.DATA.notifications || []).find(x => x.id === d.id);
       if (n) n.unread = false;
-      if (d.id) {
-        Repo.markRead(d.id).catch(() => { });
-        try { UG_NOTIF_STORE.markReadLocal(d.id); } catch (e) { }
-      }
-      const staff = S.role !== 'citizen';
-      const open = (route, id) => { go(route); S.openId = id || null; render(); Promise.resolve(loadRouteData(route)).catch(() => { }); };
-      if (d.report) {
-        open(staff ? 'incident' : 'report-detail', d.report);
-        loadDispatchesFor(d.report);
-      } else if (d.advisory) {
-        open('advisory-detail', d.advisory);
-      } else if (d.roadWork) {
-        open('roadwork', d.roadWork);
-      } else if (d.relief) {
-        open('relief', d.relief);
-      } else if (d.sos) {
-        /* staff: the SOS log, then that SOS's detail; resident: their SOS screen */
-        go('sos'); render();
-        if (staff) {
-          try { UG.DATA.sosLog = await Repo.listSos(); } catch (e) { }
-          render();
-          if ((UG.DATA.sosLog || []).some((x) => x.id === d.sos)) UG_SOS.sosDetailModal(S, d.sos);
-        }
-      } else {
-        render();
-      }
+      if (d.id) { Repo.markRead(d.id).catch(() => {}); UG_NOTIF_STORE.markReadLocal(d.id); }
+      UG_NOTIFY.openItem(n || { id:d.id, report_id:d.report, advisory_id:d.advisory, road_work_id:d.roadWork, sos_id:d.sos, relief_id:d.relief });
     },
 
     'save-advisory': async () => {
@@ -3366,14 +3345,14 @@
     /* both run from the SOS detail pop-up; reload the log afterwards so the
        status badge in the list is current */
     'sos-ack': async (d) => {
-      try { await Repo.updateSosStatus(d.id, 'acknowledged'); toast('SOS acknowledged — the sender has been notified', 'prepared'); }
+      try { if(!await UG_NOTIFY.ackSos(d.id)) return; toast('SOS acknowledged — the sender has been notified', 'prepared'); }
       catch (e) { toast(e.message, 'warning'); }
       try { if (Repo.client()) UG.DATA.sosLog = await Repo.listSos(); } catch (e) { }
       render();
     },
 
     'sos-resolve': async (d) => {
-      try { await Repo.updateSosStatus(d.id, 'resolved'); toast('SOS marked resolved', 'prepared'); }
+      try { await Repo.updateSosStatus(d.id, 'resolved'); await UG_NOTIFY.refreshPending(); toast('SOS marked resolved', 'prepared'); }
       catch (e) { toast(e.message, 'warning'); }
       try { if (Repo.client()) UG.DATA.sosLog = await Repo.listSos(); } catch (e) { }
       render();
@@ -4905,7 +4884,7 @@
       alarmSeenFor = who;
       return;
     }
-    const newInc = inc.filter((i) => i.uuid && !alarmSeen.has('r' + i.uuid) && i.status !== 'resolved' && i.status !== 'rejected');
+    const newInc = inc.filter((i) => i.uuid && !alarmSeen.has('r' + i.uuid) && i.status !== 'resolved' && i.status !== 'rejected' && !/^SOS \(/.test(i.desc || ''));
     const newN = notifs.filter((n) => n.id && !alarmSeen.has('n' + n.id));
     const newCr = crs.filter((c) => c.id && !alarmSeen.has('c' + c.id) && (c.status || 'pending') === 'pending');
     /* a new SOS row also rings, so the alarm does not hang on the notification
@@ -4920,16 +4899,16 @@
     if (role === 'citizen') {
       const mine = new Set(inc.filter((i) => i.mine).map((i) => i.uuid));
       const help = newN.some((n) => mine.has(n.report_id) &&
-        (n.type === 'dispatch' || (n.type === 'dispatch_status' && /on scene/i.test(n.title))));
+        (n.type === 'dispatch' || (n.type === 'dispatch_status' && /on scene|en route/i.test(n.title))));
       if (help) kind = 'help';
     } else if (role === 'barangay_official') {
       const team = newN.some((n) => n.type === 'dispatch' && /^Barangay Response Team/.test(n.body));
-      kind = sos ? 'sos' : newInc.length ? newInc[0].hazard : team ? 'dispatch' : null;
+      kind = newInc.length ? newInc[0].hazard : null;
     } else if (sup) {
       const emergency = newInc.filter((i) => i.sev === 'emergency');
-      kind = sos ? 'sos' : emergency.length ? emergency[0].hazard : needsDispatch ? 'attention' : newCr.length ? 'admin' : null;
+      kind = emergency.length ? emergency[0].hazard : null;
     } else if (role === 'lgu_ldrrmc') {
-      kind = sos ? 'sos' : newInc.length ? newInc[0].hazard : needsDispatch ? 'attention' : null;
+      kind = newInc.length ? newInc[0].hazard : null;
     }
     if (kind) { try { UG_ALARM.play(kind); } catch (e) { } }
   }

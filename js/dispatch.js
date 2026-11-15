@@ -154,13 +154,18 @@ const UG_DISPATCH = (function () {
   async function loadDispatches() {
     const c = client(); if (!c) return [];
     const unit = state.data.unit; if (!unit) return [];
-    const { data } = await c.from('report_dispatches')
-      .select('*, report:reports(*)')
-      .eq('unit_id', unit.id)
-      .order('dispatched_at', { ascending: false })
-      .limit(50);
-    state.data.dispatches = data || [];
-    return data || [];
+    const [active,recent]=await Promise.all([
+      c.from('report_dispatches').select('*, report:reports(*)').eq('unit_id',unit.id).not('dispatch_status','in','(done,declined)').order('dispatched_at',{ascending:true}).limit(200),
+      c.from('report_dispatches').select('*, report:reports(*)').eq('unit_id',unit.id).order('dispatched_at',{ascending:false}).limit(50)
+    ]);
+    if(active.error||recent.error)throw active.error||recent.error;
+    const data=Array.from(new Map((recent.data || []).concat(active.data || []).map(d=>[d.id,d])).values());
+    if(state.openDispatchId && !data.some(d=>d.id===state.openDispatchId)){
+      const selected=await c.from('report_dispatches').select('*, report:reports(*)').eq('unit_id',unit.id).eq('id',state.openDispatchId).maybeSingle();
+      if(selected.error)throw selected.error;if(selected.data)data.push(selected.data);
+    }
+    state.data.dispatches=data;
+    return data;
   }
 
   async function loadEvents() {
@@ -253,10 +258,10 @@ const UG_DISPATCH = (function () {
 
   async function loadNotifications() {
     const c = client(); if (!c) return [];
-    const { data } = await c.from('notifications')
-      .select('*').order('created_at', { ascending: false }).limit(50);
-    state.data.notifications = data || [];
-    return data || [];
+    const result = await Repo.loadNotificationRows();
+    if(result.error)throw result.error;
+    state.data.notifications=result.data || [];
+    return state.data.notifications;
   }
 
   /* opts.silent: a background refresh (poll, new assignment); the screen
@@ -306,7 +311,7 @@ const UG_DISPATCH = (function () {
     list.forEach((d) => seenDispatches.add(d.id));
     if (!fresh.length) return;
     const r = fresh[0].report || {};
-    try { UG_ALARM.play(UG_HAZARDS.displayLabel(r.hazard_type, r.hazard_other_text), { force: true }); } catch (e) { }
+    try { UG_NOTIFY.refreshPending(); } catch (e) { }
     app().toast('New dispatch: ' + (r.code || '') + ' · ' + (r.barangay || ''), 'warning');
   }
 
@@ -343,7 +348,7 @@ const UG_DISPATCH = (function () {
         app().toast('New dispatch: ' + (r.code || '') + ' · ' + (r.barangay || ''), 'warning');
       }
     } catch (e) { }
-    try { UG_ALARM.play(label, { force: true }); } catch (e) { }
+    try { UG_NOTIFY.refreshPending(); } catch (e) { }
     if (typeof window.UG_DISPATCH_REFRESH === 'function') window.UG_DISPATCH_REFRESH();
     else loadAll({ silent: true });
   }
@@ -355,7 +360,7 @@ const UG_DISPATCH = (function () {
      movement, on scene within 100 m of the report. Responders press Done. */
   const SEND_EVERY_MS = 15000;
   const SEND_MOVED_M = 25;
-  const track = { watchId: null, status: 'off', fix: null, sent: null, sending: false, error: '' };
+  const track = { watchId: null, status: 'off', fix: null, sent: null, sending: false, error: '', heartbeat: null };
 
   const metres = UG_UTIL.distanceM;
   function openDispatches() {
@@ -373,9 +378,15 @@ const UG_DISPATCH = (function () {
     try {
       track.watchId = navigator.geolocation.watchPosition(onFix, onFixError,
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+      clearInterval(track.heartbeat);
+      // Stationary watches can stop producing fixes. Request a fresh fix; never
+      // label an old stored coordinate as a new heartbeat.
+      track.heartbeat=setInterval(()=>{if(!track.sending && openDispatches().length && navigator.onLine!==false)
+        navigator.geolocation.getCurrentPosition(onFix,onFixError,{enableHighAccuracy:true,maximumAge:0,timeout:10000});},SEND_EVERY_MS);
     } catch (e) { track.status = 'unsupported'; track.watchId = null; }
   }
   function stopTracking() {
+    clearInterval(track.heartbeat);track.heartbeat=null;
     try { if (track.watchId != null) navigator.geolocation.clearWatch(track.watchId); } catch (e) { }
     track.watchId = null;
     track.status = 'off';
@@ -402,7 +413,8 @@ const UG_DISPATCH = (function () {
     app().render();
   }
   async function onFix(pos) {
-    const fix = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy || 0), at: Date.now() };
+    if(!Auth.state.profile || Auth.state.profile.role!=='dispatch_team' || (pos.timestamp && Date.now()-pos.timestamp>30000)) return;
+    const fix = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: (Number.isFinite(pos.coords.accuracy) ? Math.round(pos.coords.accuracy) : null), at: Date.now() };
     const wasOn = track.status === 'on';
     track.fix = fix; track.status = 'on';
     const last = track.sent;
@@ -411,7 +423,8 @@ const UG_DISPATCH = (function () {
     const open = openDispatches();
     if (!open.length) { syncTracking(); return; }
     track.sending = true;
-    let changed = false;
+    let changed = false, allSent = true;
+    track.error = '';
     try {
       for (const d of open) {
         try {
@@ -420,9 +433,9 @@ const UG_DISPATCH = (function () {
           d.last_lat = fix.lat; d.last_lng = fix.lng; d.last_accuracy = fix.accuracy;
           d.last_loc_at = new Date(fix.at).toISOString();
           if (res && res.distance_m != null) d._distance = res.distance_m;
-        } catch (e) { track.error = e.message || ''; }
+        } catch (e) { allSent = false; track.error = e.message || T('notify.locationError'); }
       }
-      track.sent = fix;
+      if(allSent) track.sent = fix;
     } finally { track.sending = false; }
     if (changed) { await loadDispatches(); await loadEvents(); }
     app().render();
@@ -526,7 +539,7 @@ const UG_DISPATCH = (function () {
     if (!visible) return '';
     const on = current === item[0];
     return '<button class="ug-nav' + (on ? ' is-on' : '') + '" data-act="dispatch-nav" data-route="' + item[0] + '">' +
-      I(item[2], 18) + '<span>' + item[1] + '</span></button>';
+      I(item[2], 18) + '<span>' + item[1] + '</span>' + (item[0]==='notifications' && window.UG_NOTIFY ? UG_NOTIFY.badgeHTML() : '') + '</button>';
   }
 
   function sidebar(session) {
@@ -561,7 +574,7 @@ const UG_DISPATCH = (function () {
         '<span class="ug-dimmer" style="font-size:10.5px">' + esc(sub) + '</span></div>' +
       '<div class="ug-rowf ug-gap8" style="gap:8px;margin-left:auto">' +
         '<span class="ug-chip ug-top-live is-on">' + I('wave', 13) + esc(T('state.online')) + '</span>' +
-        '<button class="ug-ico-btn" aria-label="Notifications" data-act="dispatch-nav" data-route="notifications">' + I('bell', 17) + (unread ? '<span class="dot"></span>' : '') + '</button>' +
+        '<button class="ug-ico-btn" aria-label="Notifications" data-act="dispatch-nav" data-route="notifications">' + I('bell', 17) + (window.UG_NOTIFY ? UG_NOTIFY.badgeHTML() : '') + (unread ? '<span class="dot"></span>' : '') + '</button>' +
         '<button class="ug-ico-btn" aria-label="Sign out" data-act="logout">' + I('logout', 17) + '</button>' +
         '<div class="ug-rowf ug-gap10" style="gap:9px;padding-left:6px;border-left:1px solid var(--ug-line);margin-left:4px">' +
           '<span class="ug-col ug-top-user" style="gap:0;align-items:flex-end"><span style="font-size:12px;font-weight:600">' + esc(session.name) + '</span>' +
@@ -804,6 +817,7 @@ const UG_DISPATCH = (function () {
       (isOpen ? trackingLine(d) : '') +
       ((next || canFinish) ? '<div class="ug-rowf ug-gap8" style="gap:8px">' +
         '<input class="ug-in" type="text" data-act="dispatch-note" data-id="' + esc(d.id) + '" placeholder="' + (next === 'on_hold' ? 'Reason (required for On hold)' : 'Note (optional)') + '" style="flex:1;max-width:none">' +
+        (!d.alarm_acked_at ? '<button class="ug-btn ug-btn--signal" data-ug-notify="dispatch" data-id="' + esc(d.id) + '">' + esc(T('notify.ack')) + '</button>' : '') +
         (next ? '<button class="ug-btn ug-btn--sm" data-act="dispatch-respond" data-id="' + esc(d.id) + '" data-next="' + next + '">' + esc(nextLabel) + '</button>' : '') +
         (canFinish ? '<button class="ug-btn ug-btn--signal ug-btn--sm" data-act="dispatch-respond" data-id="' + esc(d.id) + '" data-next="done">' + I('check', 14) + esc(T('dispatch.done')) + '</button>' : '') +
       '</div>' : '') +
@@ -969,6 +983,7 @@ const UG_DISPATCH = (function () {
         readout(cap.available, 'Available', 'var(--ug-prepared)') +
         readout(cap.accepting ? T('label.accepting') : T('label.divert'), 'Status', cap.accepting ? 'var(--ug-prepared)' : 'var(--ug-emergency)') +
       '</div>' +
+      pending +
       '<div class="ug-card" style="overflow:hidden"><table class="ug-table">' +
       '<thead><tr><th>When</th><th>Patients</th><th>Condition</th><th>Status</th><th class="t-right">Action</th></tr></thead>' +
       '<tbody>' + (notices.length ? notices.map(noticeRow).join('') : '<tr><td colspan="5" style="text-align:center;padding:20px">No incoming-patient notices</td></tr>') + '</tbody></table></div>' +
@@ -991,6 +1006,7 @@ const UG_DISPATCH = (function () {
       pageHead(T('title.requests'), T('dispatch.requestsSub'),
         '<button class="ug-btn ug-btn--signal ug-btn--sm" data-act="dispatch-request-new">' + I('plus', 14) + 'New request</button>') +
       (open.length ? '<span class="ug-chip is-on">' + open.length + ' open</span>' : '') +
+      pending +
       '<div class="ug-card" style="overflow:hidden"><table class="ug-table">' +
       '<thead><tr><th>When</th><th>Kind</th><th>Details</th><th>Status</th><th>Decided</th></tr></thead>' +
       '<tbody>' + (rows.length ? rows.map(row).join('') : '<tr><td colspan="5" style="text-align:center;padding:20px">No requests yet</td></tr>') + '</tbody></table></div>' +
@@ -1018,6 +1034,7 @@ const UG_DISPATCH = (function () {
         readout(avgScene + ' min', 'Avg to scene', 'var(--ug-prepared)') +
         readout(done, 'Completed', 'var(--ug-prepared)') +
       '</div>' +
+      pending +
       '<div class="ug-card" style="overflow:hidden"><table class="ug-table">' +
       '<thead><tr><th>When</th><th>Incident</th><th>Barangay</th><th>Status</th><th>Ack</th><th>On scene</th></tr></thead>' +
       '<tbody>' + dispatches.slice(0, 30).map((d) => '<tr>' +
@@ -1056,10 +1073,12 @@ const UG_DISPATCH = (function () {
   }
 
   function sNotifications(st) {
-    const rows = state.data.notifications || [];
+    const allRows = state.data.notifications || [];
+    const rows = window.UG_NOTIFY ? UG_NOTIFY.filteredRows(allRows) : allRows;
+    const pending = window.UG_NOTIFY ? UG_NOTIFY.pinnedHTML() + UG_NOTIFY.filtersHTML(allRows) : '';
     /* the unit's alarm on/off + test (the dispatch portal has no Settings) */
-    const alarm = (typeof UG_SETTINGS !== 'undefined' && UG_SETTINGS.alarmCard) ? UG_SETTINGS.alarmCard(st) : '';
-    if (!rows.length) return pageHead(T('title.notifications'), '') + alarm + emptyState('bell', T('dispatch.noNotifications'), T('dispatch.noNotificationsHint'));
+    const alarm = (typeof UG_SETTINGS !== 'undefined' && UG_SETTINGS.alarmCard) ? UG_SETTINGS.alarmCard(st) + (window.UG_NOTIFY ? UG_NOTIFY.devicesHTML() : '') : '';
+    if (!rows.length) return pageHead(T('title.notifications'), '') + pending + alarm + emptyState('bell', T('dispatch.noNotifications'), T('dispatch.noNotificationsHint'));
     const row = (n) => '<tr>' +
       '<td class="t-num">' + absTime(n.created_at) + '</td>' +
       /* tappable: opens the dispatch for this report and marks it read */
@@ -1073,6 +1092,7 @@ const UG_DISPATCH = (function () {
     return '<div class="ug-col" style="gap:18px">' +
       pageHead(T('title.notifications'), T('dispatch.notificationsSub'),
         '<button class="ug-btn ug-btn--ghost ug-btn--sm" data-act="dispatch-notif-read-all">Mark all read</button>') +
+      pending +
       '<div class="ug-card" style="overflow:hidden"><table class="ug-table">' +
       '<thead><tr><th>When</th><th>Title</th><th>Body</th><th>Status</th><th class="t-right">Action</th></tr></thead>' +
       '<tbody>' + rows.map(row).join('') + '</tbody></table></div>' + alarm + '</div>';
@@ -1124,7 +1144,8 @@ const UG_DISPATCH = (function () {
         if (d.next === 'done' && cur && cur.dispatch_status === 'sent') {
           await rpc('dispatch_respond', { p_dispatch_id: d.id, p_action: 'acknowledged', p_note: '' });
         }
-        await rpc('dispatch_respond', { p_dispatch_id: d.id, p_action: d.next, p_note: note });
+        if(d.next === 'acknowledged') { if(!await UG_NOTIFY.ackDispatch(d.id)) return; }
+        else await rpc('dispatch_respond', { p_dispatch_id: d.id, p_action: d.next, p_note: note });
         /* resume is an event: the dispatch goes back to on_scene (migration 051) */
         app().toast(d.next === 'resume' ? 'Rescue resumed · back on scene' : 'Status updated to ' + d.next, 'prepared');
         await loadDispatches(); await loadEvents();
@@ -1430,16 +1451,8 @@ const UG_DISPATCH = (function () {
     'dispatch-request-new': () => openRequestModal(),
     'dispatch-capacity-edit': () => openCapacityModal(),
     'dispatch-notif-open': async (d) => {
-      const c = client();
-      const n = (state.data.notifications || []).find((x) => x.id === d.id);
-      if (c && n && !n.read_at) {
-        n.read_at = new Date().toISOString();
-        c.from('notifications').update({ read_at: n.read_at }).eq('id', d.id).then(() => { }, () => { });
-      }
-      const disp = d.report ? (state.data.dispatches || []).find((x) => x.report_id === d.report) : null;
-      if (disp) { state.openDispatchId = disp.id; state.route = 'dispatch-detail'; }
-      else if (d.report) app().toast('That dispatch is no longer assigned to your unit', 'info');
-      app().render();
+      const n=(state.data.notifications || []).find(n=>n.id===d.id);
+      if(n){n.read_at=new Date().toISOString();client().from('notifications').update({read_at:n.read_at}).eq('id',n.id).then(()=>{});UG_NOTIFY.openItem(n);}
     },
     'dispatch-notif-read': async (d) => {
       const c = client(); if (!c) return;
