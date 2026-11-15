@@ -152,31 +152,23 @@ html[data-portal] body {
 }
 html[data-portal] .ug-frame { background: var(--ug-page); }
 
-/* Desktop consoles sit in a rounded frame on the role's backdrop, as in the
-   React app (App.tsx). Phones and the resident app stay edge to edge. */
+/* Desktop consoles fill the available viewport without an outer frame. */
 @media (min-width: 1100px) {
-  html[data-portal="command"] body,
-  html[data-portal="admin"] body,
-  html[data-portal="barangay"] body,
-  html[data-portal="dispatch"] body {
-    background: var(--ug-backdrop);
-  }
   html[data-portal="command"] #ug-root,
   html[data-portal="admin"] #ug-root,
   html[data-portal="barangay"] #ug-root,
   html[data-portal="dispatch"] #ug-root {
-    padding: 14px;
+    padding: 0;
   }
   html[data-portal="command"] .ug-frame.ug-d,
   html[data-portal="admin"] .ug-frame.ug-d,
   html[data-portal="barangay"] .ug-frame.ug-d,
   html[data-portal="dispatch"] .ug-frame.ug-d {
     height: 100%;
-    border-radius: 28px;
-    border: 1px solid rgba(255,255,255,.7);
-    box-shadow: 0 20px 60px -15px rgba(0,0,0,.18);
+    border-radius: 0;
+    border: 0;
+    box-shadow: none;
   }
-  html[data-portal="barangay"] .ug-frame.ug-d { border-color: rgba(194,232,255,.8); }
 }
 
 /* ============================================================ brand + logo */

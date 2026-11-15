@@ -246,39 +246,33 @@
   .ug-top{justify-content:space-between}
 }
 
-/* ================= console navigation drawer =================
-   The console navigation sits behind a three bar button instead of occupying the
-   screen permanently, so the content gets the full width. The choice is
-   remembered per device by js/app.js. */
-.ug-d-shell{display:flex;position:relative;flex:1;min-height:0}
+/* ================= console navigation =================
+   Desktop navigation occupies its own column. At 900px and below the same
+   sidebar becomes the existing hamburger-controlled off-canvas drawer. */
+.ug-d-shell{display:flex;position:relative;flex:1;min-width:0;min-height:0}
 .ug-d-main{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column}
 
 .ug-side{
-  position:absolute;top:0;bottom:0;left:0;width:272px;z-index:70;
-  transform:translateX(-104%);
+  position:relative;width:236px;z-index:70;
+  transform:none;
   transition:transform .22s cubic-bezier(.16,1,.3,1);
-  box-shadow:0 0 70px -12px rgba(0,0,0,.9);
-  overflow-y:auto;overscroll-behavior:contain;
-  padding:16px 12px calc(16px + env(safe-area-inset-bottom));
+  padding:calc(16px + env(safe-area-inset-top)) 12px calc(16px + env(safe-area-inset-bottom));
 }
-body.ug-nav-open .ug-side{transform:translateX(0)}
-
 .ug-nav-scrim{
   position:absolute;inset:0;z-index:65;background:rgba(3,6,12,.62);
   opacity:0;pointer-events:none;transition:opacity .22s;
 }
-body.ug-nav-open .ug-nav-scrim{opacity:1;pointer-events:auto}
-
-.ug-menubtn{flex:none}
+.ug-menubtn{display:none;flex:none}
 .ug-menubtn[aria-expanded="true"]{color:var(--ug-signal);border-color:rgba(var(--ug-signal-rgb, 52,214,240),.5)}
 
-/* keep the drawer clear of the notch on an installed app */
-.ug-side{padding-top:calc(16px + env(safe-area-inset-top))}
-
-/* a pinned option on a wide screen: the user can leave it open and it stays open */
-@media (min-width:1280px){
-  body.ug-nav-open .ug-d-main{margin-left:272px;transition:margin-left .22s cubic-bezier(.16,1,.3,1)}
-  body.ug-nav-open .ug-nav-scrim{opacity:0;pointer-events:none}
+@media (max-width:900px){
+  .ug-side{
+    position:absolute;top:0;bottom:0;left:0;width:min(236px,calc(100% - 40px));
+    transform:translateX(-104%);
+  }
+  body.ug-nav-open .ug-side{transform:translateX(0);box-shadow:0 0 70px -12px rgba(0,0,0,.9)}
+  body.ug-nav-open .ug-nav-scrim{opacity:1;pointer-events:auto}
+  .ug-menubtn{display:grid}
 }
 
 @media (prefers-reduced-motion:reduce){
