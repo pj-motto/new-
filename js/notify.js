@@ -7,6 +7,7 @@ const UG_NOTIFY = (function () {
   let profile = null, channel = null, epoch = 0, poll = null, clock = null, fetching = false, again = false;
   let pendingSos = [], pendingAck = [], pendingDispatch = [], minimized = false, error = '', pushOn = false, offerCitizen = false;
   let pendingOpen = null;
+  let enrollmentDismissed = false;
   let devices = [], filter = 'all', typeFilter = '', expanded = null, overlaySignature = '';
   const listeners = new Set(), retry = new Map(), busy = new Set(), urgentSeen = new Set();
   const responder = () => profile && ['lgu_ldrrmc','barangay_official','dispatch_team'].includes(profile.role);
@@ -15,6 +16,10 @@ const UG_NOTIFY = (function () {
   const settings = () => Object.assign({}, DEFAULTS, UG.DATA.alertSettings || {});
   const app = () => window.UG_APP;
   function host(id) { let el = document.getElementById(id); if (!el) { el = document.createElement('div'); el.id = id; document.body.appendChild(el); } return el; }
+  function setHTML(el, html) {
+    // Sound unlock can repaint during pointerdown; preserve unchanged controls until click.
+    if (el.__ugNotifyHTML !== html || (html && !el.firstChild)) { el.innerHTML=html; el.__ugNotifyHTML=html; }
+  }
   const button = (action, id, label) => '<button class="ug-btn ug-btn--signal" data-ug-notify="'+action+'" data-id="'+esc(id || '')+'"'+(busy.has(action+':'+id)?' disabled':'')+'>'+esc(T(label))+'</button>';
   const time = value => value ? new Date(value).toLocaleTimeString(UG_I18N.isFil() ? 'fil-PH' : 'en-PH', { timeZone:'Asia/Manila',hour12:false }) : '—';
   function cachePending(){if(!profile)return;UG_NOTIF_STORE.pendingSnapshot(profile.id,{scope:[profile.role,profile.barangay_id,profile.dispatch_unit_id,profile.is_super_admin].join('|'),pendingSos,pendingAck,pendingDispatch}).catch(()=>{});}
@@ -36,10 +41,12 @@ const UG_NOTIFY = (function () {
     const count = pendingCount(), banner = host('ug-notify-banner');
     const needsSound = responder() && UG_ALARM.needsUnlock();
     banner.className = 'ug-notify-banner';
-    banner.innerHTML = (count ? '<button data-ug-notify="expand">'+(pendingSos.length?esc(T('notify.sosWaiting'))+' '+pendingSos.length+' · ':'')+esc(T('notify.itemsWaiting'))+' '+count+' · '+esc(T('notify.open'))+'</button>' : '') +
-      (needsSound ? '<button data-ug-notify="unlock">'+UG.icon('bell',16)+' '+esc(T('notify.enableSound'))+'</button>' : '') +
+    const bannerHTML = (count ? '<button data-ug-notify="expand">'+(pendingSos.length?esc(T('notify.sosWaiting'))+' '+pendingSos.length+' · ':'')+esc(T('notify.itemsWaiting'))+' '+count+' · '+esc(T('notify.open'))+'</button>' : '') +
+      (responder() ? '<button data-ug-notify="unlock">'+UG.icon('bell',16)+' '+esc(T('notify.enableSound'))+'</button>' : '') +
       (responder() && !pushOn ? '<button data-ug-notify="enroll">'+esc(T('notify.alertsOff'))+'</button>' : '');
-    banner.hidden = !banner.innerHTML;
+    setHTML(banner,bannerHTML);
+    const unlock = banner.querySelector('[data-ug-notify="unlock"]'); if (unlock) unlock.hidden = !needsSound;
+    banner.hidden = !(count || needsSound || (responder() && !pushOn));
     document.body.classList.toggle('ug-has-notify-banner',!banner.hidden);
     document.querySelectorAll('[data-ug-action-count]').forEach(el => { el.textContent = String(count); el.hidden = count === 0; });
     const overlay = host('ug-notify-overlay');
@@ -70,11 +77,18 @@ const UG_NOTIFY = (function () {
       el.classList.toggle('ug-notify-overdue',seconds>=settings().sos_ack_timeout_s);
     });
   }
+  function setEnrollmentDismissed(value) {
+    enrollmentDismissed = value;
+    if (profile) {
+      try { localStorage.setItem('ug.push.enrollment.dismissed.'+profile.id, value ? '1' : '0'); } catch (e) {}
+    }
+  }
   function paintEnrollment() {
     const el=host('ug-notify-enrollment'); el.className='ug-notify-enrollment';
-    el.hidden=pushOn || (!responder() && !offerCitizen);
+    el.hidden=enrollmentDismissed || pushOn || (!responder() && !offerCitizen);
     if(el.hidden){el.innerHTML='';return;}
-    el.innerHTML='<h3>'+esc(T('notify.enableAlerts'))+'</h3><p>'+esc(T('notify.ios'))+'</p>'+button('enable-push','','notify.allow')+button('test-push','','notify.testPush')+'<p>'+esc(T('notify.deliveryLimits'))+'</p>';
+    const html='<div class="ug-notify-enrollment-head"><h3>'+esc(T('notify.enableAlerts'))+'</h3><button type="button" class="ug-ico-btn" data-ug-notify="dismiss-enrollment" aria-label="'+esc(T('notify.close'))+'">'+UG.icon('x',18)+'</button></div><p>'+esc(T('notify.ios'))+'</p>'+button('enable-push','','notify.allow')+button('test-push','','notify.testPush')+'<p>'+esc(T('notify.deliveryLimits'))+'</p>';
+    setHTML(el,html);
   }
   async function deviceState() {
     if (!profile) return;
@@ -125,6 +139,7 @@ const UG_NOTIFY = (function () {
   }
   function stop() {
     epoch++; hasConfirmed=false; const c=Repo.client(); if(c&&channel)c.removeChannel(channel); channel=null;
+    enrollmentDismissed=false;
     clearInterval(poll);clearInterval(clock);profile=null;pendingSos=[];pendingAck=[];pendingDispatch=[];devices=[];pushOn=false;error='';retry.clear();busy.clear();urgentSeen.clear();overlaySignature='';
     UG_ALARM.stopAll(); ['ug-notify-banner','ug-notify-overlay','ug-notify-enrollment'].forEach(id=>{const el=document.getElementById(id);if(el)el.remove();});
     document.body.classList.remove('ug-has-notify-banner');
@@ -132,7 +147,9 @@ const UG_NOTIFY = (function () {
   function start(p) {
     if(!p||p.disabled){stop();return;}
     if(profile && profile.id===p.id && profile.role===p.role && profile.dispatch_unit_id===p.dispatch_unit_id && profile.barangay_id===p.barangay_id && profile.is_super_admin===p.is_super_admin)return;
-    stop();profile=p;minimized=superAdmin();offerCitizen=false; const c=Repo.client(); if(!c)return;
+    stop();profile=p;minimized=superAdmin();offerCitizen=false;
+    try { enrollmentDismissed=localStorage.getItem('ug.push.enrollment.dismissed.'+p.id)==='1'; } catch (e) {}
+    const c=Repo.client(); if(!c)return;
     channel=c.channel('ug-pending-'+p.id);
     [['notifications','user_id=eq.'+p.id],['sos_log',null],['report_dispatches',p.role==='dispatch_team'?'unit_id=eq.'+p.dispatch_unit_id:null]].forEach(([table,scope])=>{
       ['INSERT','UPDATE'].forEach(event=>channel.on('postgres_changes',Object.assign({event,schema:'public',table},scope?{filter:scope}:{}),payload=>mergeEvent(table,payload.new)));
@@ -244,7 +261,8 @@ const UG_NOTIFY = (function () {
       else if(action==='open-dispatch')openItem({dispatch_id:id});
       else if(action==='decline'){minimized=true;paint();if(app())app().actions['dispatch-decline']({id});}
       else if(action==='open-notification'){const n=pendingAck.find(n=>n.id===id);if(n){Repo.markRead(id).catch(()=>{});openItem(n);}}
-      else if(action==='enroll'){offerCitizen=true;paintEnrollment();document.getElementById('ug-notify-enrollment').scrollIntoView();}
+      else if(action==='dismiss-enrollment'){setEnrollmentDismissed(true);paintEnrollment();document.querySelector('#ug-notify-banner [data-ug-notify="enroll"]')?.focus();}
+      else if(action==='enroll'){setEnrollmentDismissed(false);offerCitizen=true;paintEnrollment();document.querySelector('#ug-notify-enrollment [data-ug-notify="dismiss-enrollment"]')?.focus();}
       else if(action==='enable-push'){await UG_PWA.enablePush();await deviceState();}
       else if(action==='test-push'){const r=await Repo.client().functions.invoke('push-dispatch',{body:{selfTest:true}});if(r.error)throw r.error;if(!r.data?.sent)throw new Error(T('notify.noDevice'));if(app())app().toast(T('notify.testSent'),'prepared');}
       else if(action==='remove-device'){const r=await Repo.client().from('push_subscriptions').delete().eq('id',id).eq('user_id',profile.id);if(r.error)throw r.error;await deviceState();if(app())app().render();}

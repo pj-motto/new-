@@ -11,6 +11,8 @@ body.ug-has-notify-banner{padding-top:48px}
 .ug-notify-pinned article{padding:12px 0;border-bottom:1px solid #d998a2}.ug-notify-pinned button{margin:6px}
 .ug-notify-enrollment{position:fixed;bottom:12px;right:12px;z-index:2000;max-width:360px;max-height:35vh;overflow:auto;background:var(--ug-surface,#fff);color:var(--ug-ink,#172239);border:2px solid #9e1425;border-radius:12px;padding:16px;box-shadow:0 4px 18px #0003;font-size:12px}
 .ug-notify-enrollment p{margin:8px 0}.ug-notify-enrollment button{margin:4px}
+.ug-notify-enrollment-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.ug-notify-enrollment-head .ug-ico-btn{flex:none;margin:0}
 .ug-notify-filters{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}.ug-notify-filters select{padding:8px;border:1px solid #aab3c2;border-radius:6px}
 .ug-action-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;min-height:20px;border-radius:10px;background:#b10d28;color:#fff;font-size:11px;font-weight:800;margin-left:5px;padding:0 5px}.ug-action-count[hidden]{display:none}
 .ug-alert-settings label{display:grid;gap:5px;margin:12px 0;font-weight:600}.ug-alert-settings small{font-weight:400}.ug-alert-settings input,.ug-alert-settings select{padding:8px;border:1px solid #aab3c2;border-radius:6px;max-width:320px}
